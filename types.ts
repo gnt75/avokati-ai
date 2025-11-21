@@ -7,7 +7,7 @@ export interface UploadedFile {
   timestamp: number;
   isActive: boolean;
   category: 'law' | 'case';
-  isRagAutoSelected?: boolean; // New: Marked by AI as relevant
+  isRagAutoSelected?: boolean;
 }
 
 export enum MessageRole {
@@ -27,4 +27,12 @@ export interface ChatMessage {
 export enum ViewState {
   CHAT = 'CHAT',
   DOCUMENTS = 'DOCUMENTS'
+}
+
+// Google API Types
+declare global {
+  interface Window {
+    gapi: any;
+    google: any;
+  }
 }
