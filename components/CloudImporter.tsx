@@ -20,7 +20,9 @@ const CloudImporter: React.FC<CloudImporterProps> = ({ isOpen, onClose, onImport
   useEffect(() => {
     if (isOpen && !isApiLoaded) {
       const loadGapi = () => {
-        if (window.gapi && window.google) {
+        // Cast window to any to avoid TypeScript errors
+        const w = window as any;
+        if (w.gapi && w.google) {
           setIsApiLoaded(true);
           initializeGooglePicker();
         } else {
@@ -41,7 +43,8 @@ const CloudImporter: React.FC<CloudImporterProps> = ({ isOpen, onClose, onImport
     }
 
     // Initialize Identity Services (for OAuth)
-    const client = window.google.accounts.oauth2.initTokenClient({
+    const w = window as any;
+    const client = w.google.accounts.oauth2.initTokenClient({
       client_id: clientId,
       scope: SCOPES,
       callback: '', // defined later
@@ -72,9 +75,10 @@ const CloudImporter: React.FC<CloudImporterProps> = ({ isOpen, onClose, onImport
   };
 
   const createPicker = (accessToken: string) => {
-    if (!window.google || !window.google.picker) {
+    const w = window as any;
+    if (!w.google || !w.google.picker) {
         // Load picker library if not ready
-        window.gapi.load('picker', { callback: () => showPicker(accessToken) });
+        w.gapi.load('picker', { callback: () => showPicker(accessToken) });
     } else {
         showPicker(accessToken);
     }
@@ -82,10 +86,11 @@ const CloudImporter: React.FC<CloudImporterProps> = ({ isOpen, onClose, onImport
 
   const showPicker = (accessToken: string) => {
       const apiKey = process.env.VITE_GOOGLE_API_KEY;
+      const w = window as any;
       
-      const picker = new window.google.picker.PickerBuilder()
-        .addView(window.google.picker.ViewId.PDFS) // Show PDFs
-        .addView(window.google.picker.ViewId.DOCS) // And Docs
+      const picker = new w.google.picker.PickerBuilder()
+        .addView(w.google.picker.ViewId.PDFS) // Show PDFs
+        .addView(w.google.picker.ViewId.DOCS) // And Docs
         .setOAuthToken(accessToken)
         .setDeveloperKey(apiKey!)
         .setCallback((data: any) => pickerCallback(data, accessToken))
@@ -96,15 +101,16 @@ const CloudImporter: React.FC<CloudImporterProps> = ({ isOpen, onClose, onImport
   };
 
   const pickerCallback = async (data: any, accessToken: string) => {
-    if (data[window.google.picker.Response.ACTION] === window.google.picker.Action.PICKED) {
+    const w = window as any;
+    if (data[w.google.picker.Response.ACTION] === w.google.picker.Action.PICKED) {
         setIsProcessing(true);
-        const docs = data[window.google.picker.Response.DOCUMENTS];
+        const docs = data[w.google.picker.Response.DOCUMENTS];
         const importedFiles: UploadedFile[] = [];
 
         try {
             for (const doc of docs) {
-                const fileId = doc[window.google.picker.Document.ID];
-                const name = doc[window.google.picker.Document.NAME];
+                const fileId = doc[w.google.picker.Document.ID];
+                const name = doc[w.google.picker.Document.NAME];
                 
                 // Download file content using the token
                 const content = await downloadFile(fileId, accessToken);
@@ -114,7 +120,7 @@ const CloudImporter: React.FC<CloudImporterProps> = ({ isOpen, onClose, onImport
                         id: Math.random().toString(36).substring(2, 11) + Date.now().toString(),
                         name: name,
                         type: 'application/pdf',
-                        size: 1024 * 100, // Approximate, real size needs extra call
+                        size: 1024 * 100, // Approximate
                         content: content,
                         timestamp: Date.now(),
                         isActive: false,
