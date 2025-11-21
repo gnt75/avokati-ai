@@ -29,7 +29,7 @@ export enum ViewState {
   DOCUMENTS = 'DOCUMENTS'
 }
 
-// Google API Types
+// Google API Types and Process Env
 declare global {
   interface Window {
     gapi: any;
