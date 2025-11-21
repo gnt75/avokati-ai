@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Cloud, Download, X, FileText, Loader2, AlertCircle, Database, WifiOff } from 'lucide-react';
+import { Cloud, Download, X, FileText, Loader2, AlertCircle, HardDrive, LogIn } from 'lucide-react';
 import { UploadedFile } from '../types';
 
 interface CloudImporterProps {
@@ -8,124 +8,170 @@ interface CloudImporterProps {
   onImport: (files: UploadedFile[]) => void;
 }
 
-interface CloudFile {
-  name: string;
-  size: number;
-  updated: string;
-}
-
-// MOCK DATA FOR PREVIEW MODE
-const MOCK_FILES: CloudFile[] = [
-  { name: 'Kodi_Civil_2024.pdf', size: 2500000, updated: new Date().toISOString() },
-  { name: 'Kodi_Penal_I_Perditesuar.pdf', size: 1800000, updated: new Date(Date.now() - 86400000).toISOString() },
-  { name: 'Ligji_per_Tregtine.pdf', size: 950000, updated: new Date(Date.now() - 172800000).toISOString() },
-  { name: 'Vendime_Gjykata_Larte_Vol1.pdf', size: 5200000, updated: new Date(Date.now() - 400000000).toISOString() },
-  { name: 'Kontrata_Tip_Shitblerje.pdf', size: 120000, updated: new Date().toISOString() },
-];
+const SCOPES = 'https://www.googleapis.com/auth/drive.readonly';
 
 const CloudImporter: React.FC<CloudImporterProps> = ({ isOpen, onClose, onImport }) => {
-  const [files, setFiles] = useState<CloudFile[]>([]);
-  const [isLoadingList, setIsLoadingList] = useState(false);
-  const [isDownloading, setIsDownloading] = useState(false);
+  const [isApiLoaded, setIsApiLoaded] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [tokenClient, setTokenClient] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
-  const [isDemoMode, setIsDemoMode] = useState(false);
 
-  // Load list when modal opens
+  // Load Google API scripts
   useEffect(() => {
-    if (isOpen) {
-      fetchFileList();
+    if (isOpen && !isApiLoaded) {
+      const loadGapi = () => {
+        if (window.gapi && window.google) {
+          setIsApiLoaded(true);
+          initializeGooglePicker();
+        } else {
+          setTimeout(loadGapi, 500);
+        }
+      };
+      loadGapi();
     }
   }, [isOpen]);
 
-  const fetchFileList = async () => {
-    setIsLoadingList(true);
-    setError(null);
-    setIsDemoMode(false);
-    
-    try {
-      const res = await fetch('/api/gcs?action=list');
-      
-      // Handle non-JSON responses (common in preview/404)
-      const contentType = res.headers.get("content-type");
-      if (!res.ok || !contentType || !contentType.includes("application/json")) {
-        throw new Error('API not available');
-      }
+  const initializeGooglePicker = () => {
+    const apiKey = process.env.VITE_GOOGLE_API_KEY;
+    const clientId = process.env.VITE_GOOGLE_CLIENT_ID;
 
-      const data = await res.json();
-      setFiles(data.files || []);
-    } catch (err) {
-      console.log("Backend not detected, switching to Demo Mode for preview.");
-      // Fallback to Mock Data for Preview
-      setIsDemoMode(true);
-      setFiles(MOCK_FILES);
-    } finally {
-      setIsLoadingList(false);
+    if (!apiKey || !clientId) {
+      setError("Konfigurimi i Google mungon (API Key/Client ID).");
+      return;
+    }
+
+    // Initialize Identity Services (for OAuth)
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: SCOPES,
+      callback: '', // defined later
+    });
+    setTokenClient(client);
+  };
+
+  const handleOpenPicker = () => {
+    if (!tokenClient) return;
+    
+    setIsProcessing(true);
+    setError(null);
+
+    // 1. Request Access Token
+    tokenClient.callback = async (response: any) => {
+      if (response.error !== undefined) {
+        setError("Përdoruesi refuzoi aksesin ose ndodhi një gabim.");
+        setIsProcessing(false);
+        return;
+      }
+      
+      // 2. Build and Show Picker
+      createPicker(response.access_token);
+    };
+
+    // Trigger login flow
+    tokenClient.requestAccessToken({ prompt: '' });
+  };
+
+  const createPicker = (accessToken: string) => {
+    if (!window.google || !window.google.picker) {
+        // Load picker library if not ready
+        window.gapi.load('picker', { callback: () => showPicker(accessToken) });
+    } else {
+        showPicker(accessToken);
     }
   };
 
-  const toggleSelection = (fileName: string) => {
-    setSelectedFiles(prev => 
-      prev.includes(fileName) 
-        ? prev.filter(f => f !== fileName) 
-        : [...prev, fileName]
-    );
+  const showPicker = (accessToken: string) => {
+      const apiKey = process.env.VITE_GOOGLE_API_KEY;
+      
+      const picker = new window.google.picker.PickerBuilder()
+        .addView(window.google.picker.ViewId.PDFS) // Show PDFs
+        .addView(window.google.picker.ViewId.DOCS) // And Docs
+        .setOAuthToken(accessToken)
+        .setDeveloperKey(apiKey!)
+        .setCallback((data: any) => pickerCallback(data, accessToken))
+        .build();
+      
+      picker.setVisible(true);
+      setIsProcessing(false); // Picker is open, processing UI done
   };
 
-  const handleImport = async () => {
-    if (selectedFiles.length === 0) return;
-    setIsDownloading(true);
-    
-    const importedFiles: UploadedFile[] = [];
+  const pickerCallback = async (data: any, accessToken: string) => {
+    if (data[window.google.picker.Response.ACTION] === window.google.picker.Action.PICKED) {
+        setIsProcessing(true);
+        const docs = data[window.google.picker.Response.DOCUMENTS];
+        const importedFiles: UploadedFile[] = [];
 
+        try {
+            for (const doc of docs) {
+                const fileId = doc[window.google.picker.Document.ID];
+                const name = doc[window.google.picker.Document.NAME];
+                
+                // Download file content using the token
+                const content = await downloadFile(fileId, accessToken);
+                
+                if (content) {
+                    importedFiles.push({
+                        id: Math.random().toString(36).substring(2, 11) + Date.now().toString(),
+                        name: name,
+                        type: 'application/pdf',
+                        size: 1024 * 100, // Approximate, real size needs extra call
+                        content: content,
+                        timestamp: Date.now(),
+                        isActive: false,
+                        category: 'law'
+                    });
+                }
+            }
+            
+            onImport(importedFiles);
+            onClose();
+        } catch (e) {
+            console.error(e);
+            setError("Dështoi shkarkimi i skedarëve.");
+        } finally {
+            setIsProcessing(false);
+        }
+    }
+  };
+
+  const downloadFile = async (fileId: string, accessToken: string): Promise<string | null> => {
     try {
-      // Simulate network delay for demo
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
-      for (const fileName of selectedFiles) {
-        // In Demo mode, we generate fake content since we can't download real files
-        const fakeContent = "JVBERi0xLjcKCjEgMCBvYmogICUgZW50cnkgcG9pbnQKPDwKICAvVHlwZSAvQ2F0YWxvZwogIC9QYWdlcyAyIDAgUgo+PgplbmRvYmoKCjIgMCBvYmoKPDwKICAvVHlwZSAvUGFnZXMKICAvTWVkaWFCb3ggWyAwIDAgMjAwIDIwMCBdCiAgL0NvdW50IDEKICAvS2lkcyBbIDMgMCBSIF0KPj4KZW5kb2JqCgozIDAgb2JqCjw8CiAgL1R5cGUgL1BhZ2UKICAvUGFyZW50IDIgMCBSCiAgL1Jlc291cmNlcyA8PAogICAgL0ZvbnQgPDwKICAgICAgL0YxIDQgMCBSCisgICAgPj4KICA+PgogIC9Db250ZW50cyA1IDAgUgo+PgplbmRvYmoKCjQgMCBvYmoKPDwKICAvVHlwZSAvRm9udAogIC9TdWJ0eXBlIC9UeXBlMQogIC9CYXNlRm9udCAvVGltZXMtUm9tYW4KPj4KZW5kb2JqCgo1IDAgb2JqCiAgPDwgL0xlbmd0aCA0NCA+PgpzdHJlYW0KQlQKNzAgNTAgVGQKL0YxIDEyIFRmCihIZWxsbywgd29ybGQhKSBUagpFVAplbmRzdHJlYW0KZW5kb2JqCgp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTAgMDAwMDAgbiAKMDAwMDAwMDA2MCAwMDAwMCBuIAwwMDAwMDAwMTU3IDAwMDAwIG4gCjAwMDAwMDAyNTUgMDAwMDAgbiAKMDAwMDAwMDM2MiAwMDAwMCBuIAp0cmFpbGVyCjw8CiAgL1NpemUgNgogIC9Sb290IDEgMCBSCj4+CnN0YXJ0eHJlZgo0MTMKJSVFT0YK";
-
-        importedFiles.push({
-          id: Math.random().toString(36).substring(2, 11) + Date.now().toString(),
-          name: fileName.split('/').pop() || fileName,
-          type: 'application/pdf',
-          size: 1024 * 50, // Fake size
-          content: fakeContent, 
-          timestamp: Date.now(),
-          isActive: false,
-          category: 'law'
+        const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+            headers: {
+                'Authorization': `Bearer ${accessToken}`
+            }
         });
-      }
-
-      onImport(importedFiles);
-      onClose();
-      setSelectedFiles([]);
-      
-    } catch (err) {
-      setError('Ndodhi një gabim gjatë importimit.');
-    } finally {
-      setIsDownloading(false);
+        
+        if (!response.ok) throw new Error("Download failed");
+        
+        const blob = await response.blob();
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64 = (reader.result as string).split(',')[1];
+                resolve(base64);
+            };
+            reader.readAsDataURL(blob);
+        });
+    } catch (e) {
+        console.error("Download error", e);
+        return null;
     }
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fadeIn">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
-        
-        {/* Header */}
-        <div className="p-5 border-b border-slate-200 flex justify-between items-center bg-slate-50">
-          <div className="flex items-center gap-3 text-indigo-700">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fadeIn">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden">
+        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+          <div className="flex items-center gap-3 text-indigo-800">
             <div className="p-2 bg-indigo-100 rounded-lg">
-               <Database className="w-6 h-6" />
+               <HardDrive className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-lg font-bold">Google Cloud Storage</h2>
-              <p className="text-xs text-slate-500">
-                {isDemoMode ? 'Modaliteti Demo (Preview)' : 'Importo dokumente nga arkiva e zyrës'}
-              </p>
+              <h2 className="text-lg font-bold">Google Drive</h2>
+              <p className="text-xs text-slate-500">Lidhuni me llogarinë tuaj</p>
             </div>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">
@@ -133,106 +179,54 @@ const CloudImporter: React.FC<CloudImporterProps> = ({ isOpen, onClose, onImport
           </button>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-2 bg-slate-50/50">
-          {isLoadingList ? (
-            <div className="flex flex-col items-center justify-center h-40 text-slate-500 gap-3">
-              <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
-              <span className="text-sm">Duke u lidhur me Cloud...</span>
-            </div>
-          ) : error ? (
-            <div className="flex flex-col items-center justify-center h-40 text-red-500 gap-2 p-4 text-center">
-              <AlertCircle className="w-8 h-8" />
-              <span className="text-sm font-medium">{error}</span>
-            </div>
-          ) : (
-            <>
-              {isDemoMode && (
-                <div className="mx-2 mt-2 mb-1 p-2 bg-amber-50 border border-amber-200 rounded text-amber-700 text-xs flex items-center gap-2">
-                  <WifiOff className="w-4 h-4" />
-                  <span>Po shikoni të dhëna demo sepse API nuk është i lidhur në këtë preview.</span>
+        <div className="p-8 flex flex-col items-center justify-center gap-6 text-center">
+            {error ? (
+                <div className="p-4 bg-red-50 text-red-600 rounded-lg text-sm flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5" />
+                    {error}
                 </div>
-              )}
-              
-              {files.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
-                  <Cloud className="w-12 h-12 opacity-20" />
-                  <span className="text-sm">Nuk u gjetën skedarë PDF.</span>
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  {files.map((file) => (
-                    <div 
-                      key={file.name}
-                      onClick={() => toggleSelection(file.name)}
-                      className={`
-                        flex items-center justify-between p-3 rounded-lg cursor-pointer border transition-all
-                        ${selectedFiles.includes(file.name) 
-                            ? 'bg-indigo-50 border-indigo-300 shadow-sm' 
-                            : 'bg-white border-slate-200 hover:border-indigo-200 hover:bg-slate-50'}
-                      `}
-                    >
-                      <div className="flex items-center gap-3 overflow-hidden">
-                        <div className={`
-                            flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center
-                            ${selectedFiles.includes(file.name) ? 'bg-indigo-500 text-white' : 'bg-slate-100 text-slate-400'}
-                        `}>
-                            <FileText className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0">
-                            <p className={`text-sm font-medium truncate ${selectedFiles.includes(file.name) ? 'text-indigo-900' : 'text-slate-700'}`}>
-                                {file.name}
-                            </p>
-                            <p className="text-xs text-slate-400">
-                                {(file.size / 1024 / 1024).toFixed(2)} MB • {new Date(file.updated).toLocaleDateString()}
-                            </p>
-                        </div>
-                      </div>
-                      
-                      <div className={`
-                        w-5 h-5 rounded border flex items-center justify-center transition-colors
-                        ${selectedFiles.includes(file.name) ? 'bg-indigo-500 border-indigo-500' : 'border-slate-300'}
-                      `}>
-                        {selectedFiles.includes(file.name) && <Cloud className="w-3 h-3 text-white" />}
-                      </div>
+            ) : (
+                <>
+                    <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center mb-2">
+                        <img src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg" alt="Drive" className="w-8 h-8" />
                     </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </div>
+                    <div>
+                        <h3 className="font-semibold text-slate-800">Importo nga Drive Personal</h3>
+                        <p className="text-sm text-slate-500 mt-1 px-4">
+                            Zgjidhni dokumentet PDF nga Google Drive juaj për t'i analizuar me Avokati AI.
+                        </p>
+                    </div>
+                </>
+            )}
 
-        {/* Footer */}
-        <div className="p-4 border-t border-slate-200 bg-white flex justify-between items-center">
-          <div className="text-xs text-slate-500">
-            {selectedFiles.length} skedarë të zgjedhur
-          </div>
-          <div className="flex gap-3">
-            <button 
-                onClick={onClose}
-                className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-            >
-                Anullo
-            </button>
-            <button 
-                onClick={handleImport}
-                disabled={selectedFiles.length === 0 || isDownloading}
+            <button
+                onClick={handleOpenPicker}
+                disabled={isProcessing || !isApiLoaded}
                 className={`
-                    flex items-center gap-2 px-6 py-2 text-sm font-medium rounded-lg text-white transition-all
-                    ${selectedFiles.length === 0 || isDownloading
-                        ? 'bg-slate-300 cursor-not-allowed'
-                        : 'bg-indigo-600 hover:bg-indigo-700 shadow-md hover:shadow-lg'}
+                    w-full flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl font-medium transition-all shadow-sm
+                    ${isProcessing || !isApiLoaded
+                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                        : 'bg-[#1a73e8] hover:bg-[#1557b0] text-white shadow-indigo-200 hover:shadow-md transform hover:-translate-y-0.5'}
                 `}
             >
-                {isDownloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                {isDownloading ? 'Duke importuar...' : isDemoMode ? 'Importo (Demo)' : 'Importo në Aplikacion'}
+                {isProcessing ? (
+                    <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        <span>Duke u lidhur...</span>
+                    </>
+                ) : (
+                    <>
+                        <LogIn className="w-5 h-5" />
+                        <span>Lidh Google Drive</span>
+                    </>
+                )}
             </button>
-          </div>
+
+            <p className="text-[10px] text-slate-400">
+                Ne nuk ruajmë fjalëkalimin tuaj. Qasja bëhet vetëm për skedarët që ju zgjidhni.
+            </p>
         </div>
       </div>
     </div>
   );
 };
-
-export default CloudImporter;
